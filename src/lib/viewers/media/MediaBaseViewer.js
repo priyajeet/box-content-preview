@@ -303,7 +303,7 @@ class MediaBaseViewer extends BaseViewer {
      * @return {void}
      */
     loadUI() {
-        this.mediaControls = new MediaControls(this.mediaContainerEl, this.mediaEl, this.cache);
+        this.mediaControls = new MediaControls(this.mediaContainerEl, this.mediaEl, this.cache, this.options);
 
         // Add event listeners for the media controls
         this.addEventListenersForMediaControls();

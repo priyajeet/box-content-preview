@@ -1,4 +1,5 @@
 import EventEmitter from 'events';
+import interact from 'interactjs';
 import controlsTemplate from './MediaControls.html';
 import Scrubber from './Scrubber';
 import Settings from './Settings';
@@ -29,12 +30,13 @@ class MediaControls extends EventEmitter {
      * @param {Cache} cache - Cache instance
      * @return {Controls} Controls instance
      */
-    constructor(containerEl, mediaEl, cache) {
+    constructor(containerEl, mediaEl, cache, options) {
         super();
 
         this.containerEl = containerEl;
         this.mediaEl = mediaEl;
         this.cache = cache;
+        this.options = options;
 
         insertTemplate(this.containerEl, controlsTemplate);
 
@@ -52,6 +54,9 @@ class MediaControls extends EventEmitter {
 
         this.timecodeEl = this.wrapperEl.querySelector('.bp-media-controls-timecode');
         this.durationEl = this.wrapperEl.querySelector('.bp-media-controls-duration');
+
+        this.watermarkButtonEl = this.wrapperEl.querySelector('.bp-media-watermark-icon');
+        this.setLabel(this.watermarkButtonEl, __('watermark'));
 
         this.fullscreenButtonEl = this.wrapperEl.querySelector('.bp-media-fullscreen-icon');
         this.setLabel(this.fullscreenButtonEl, __('enter_fullscreen'));
@@ -71,6 +76,7 @@ class MediaControls extends EventEmitter {
         this.scrubberMouseUpHandler = this.scrubberMouseUpHandler.bind(this);
         this.togglePlay = this.togglePlay.bind(this);
         this.toggleMute = this.toggleMute.bind(this);
+        this.toggleWatermarkEditor = this.toggleWatermarkEditor.bind(this);
         this.toggleFullscreen = this.toggleFullscreen.bind(this);
         this.toggleFullscreenIcon = this.toggleFullscreenIcon.bind(this);
         this.toggleSettings = this.toggleSettings.bind(this);
@@ -138,6 +144,10 @@ class MediaControls extends EventEmitter {
 
         if (this.fullscreenButtonEl) {
             removeActivationListener(this.fullscreenButtonEl, this.toggleFullscreenHandler);
+        }
+
+        if (this.watermarkButtonEl) {
+            removeActivationListener(this.watermarkButtonEl, this.toggleWatermarkEditor);
         }
 
         if (this.settingsButtonEl) {
@@ -318,6 +328,11 @@ class MediaControls extends EventEmitter {
             Math.floor(time),
             `${this.timecodeEl.textContent} ${__('of')} ${this.durationEl.textContent}`
         );
+
+        if (this.watermarkEl) {
+            this.watermark = this.watermarkTextEl.value.replace(/\r?\n/g, '\\n');
+            this.watermarkEl.innerHTML = this.getWatermarkHTML();
+        }
     }
 
     /**
@@ -353,6 +368,208 @@ class MediaControls extends EventEmitter {
     togglePlay() {
         this.show();
         this.emit('toggleplayback');
+    }
+
+    /**
+     * Destroys watermark editor
+     *
+     * @return {void}
+     */
+    destroyWatermarkEditor() {
+        if (this.watermarkInteract) {
+            this.watermarkInteract.unset();
+            this.watermarkInteract = undefined;
+            this.containerEl.removeChild(this.watermarkContainerEl);
+        }
+    }
+
+    /**
+     * Toggles watermark editor
+     *
+     * @emits togglefullscreen
+     * @return {void}
+     */
+    toggleWatermarkEditor() {
+        if (this.watermark) {
+            this.destroyWatermarkEditor();
+            return;
+        }
+
+        this.requestWatermarkingData();
+    }
+
+    getWatermarkHTML() {
+        const date = new Date(Date.now());
+        return `${this.watermark}`
+            .split('\\n')
+            .map((frag) => {
+                const str = frag
+                    .replace('%user%', this.login)
+                    .replace('%date%', `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`)
+                    .replace('%timecode%', this.formatTime(this.mediaEl.currentTime));
+
+                return str ? `<div>${str}</div>` : '<br />';
+            })
+            .join('');
+    }
+
+    requestWatermarkingData() {
+        fetch(`https://api.phora.inside-box.net/2.0/users/me?access_token=${this.options.token}`)
+            .then((response) => response.json())
+            .then(({ login }) => {
+                this.login = login;
+
+                fetch(
+                    `https://api.phora.inside-box.net/2.0/files/5239687317?fields=metadata.enterprise.watermarking&access_token=${
+                        this.options.token
+                    }`
+                )
+                    .then((response) => response.json())
+                    .then(({ metadata }) => {
+                        this.containerEl.querySelector('.bp-media-play-button').style.display = 'none';
+                        this.hide();
+
+                        const date = new Date(Date.now());
+                        const { width: mediaWidth, height: mediaHeight } = this.mediaEl.getBoundingClientRect();
+                        const { x, y, width = 0.95, height = 0.067, watermark } = metadata.enterprise.watermarking;
+                        const numLines = (watermark.match(/\\n/g) || []).length + 1;
+                        const watermarkWidth = Math.min(mediaWidth, width * mediaWidth);
+                        const watermarkHeight = Math.min(mediaHeight, height * mediaHeight);
+                        const rowHeight = watermarkHeight / numLines;
+
+                        this.watermarkContainerEl = this.containerEl.appendChild(document.createElement('div'));
+                        this.watermarkContainerEl.classList.add('bp-media-dash-watermark-container');
+
+                        this.watermarkEl = this.watermarkContainerEl.appendChild(document.createElement('div'));
+                        this.watermarkEl.classList.add('bp-media-dash-watermark');
+                        this.watermarkEl.dataset.x = x * mediaWidth - watermarkWidth / 2;
+                        this.watermarkEl.dataset.y = y * mediaHeight - watermarkHeight / 2;
+                        this.watermarkEl.style.transform = `translate(${this.watermarkEl.dataset.x}px, ${
+                            this.watermarkEl.dataset.y
+                        }px)`;
+                        this.watermarkEl.style.width = `${watermarkWidth}px`;
+                        this.watermarkEl.style.height = `${watermarkHeight}px`;
+                        this.watermarkEl.style.fontSize = `${watermarkWidth / 12}px`;
+                        this.watermark = watermark;
+                        this.watermarkEl.innerHTML = this.getWatermarkHTML(watermark);
+
+                        this.watermarkTextEl = this.watermarkContainerEl.appendChild(
+                            document.createElement('textarea')
+                        );
+                        this.watermarkTextEl.classList.add('bp-media-dash-watermark-text');
+                        this.watermarkTextEl.value = watermark.replace(/\\n/g, '\r\n');
+                        this.watermarkTextEl.addEventListener('keyup', () => {
+                            this.watermark = this.watermarkTextEl.value.replace(/\r?\n/g, '\\n');
+                            this.watermarkEl.innerHTML = this.getWatermarkHTML();
+                        });
+
+                        this.watermarkSaveBtn = this.watermarkContainerEl.appendChild(document.createElement('button'));
+                        this.watermarkSaveBtn.type = 'button';
+                        this.watermarkSaveBtn.classList.add('bp-media-dash-watermark-save');
+                        this.watermarkSaveBtn.innerHTML =
+                            '<svg width="24" height="24" viewBox="0 0 14 13" role="presentation"><path class="fill-color" fill="#fff" d="M3.8 7.6l-.4.4 2.5 2.5L13.3 3c.2-.2.3-.5.3-.7 0-.3-.1-.5-.3-.7L11.9.2c-.2-.2-.5-.3-.7-.3-.3 0-.5.1-.7.3L3.1 7.6l.3.4.4-.4.3.4 7-7 1.4 1.4L5.9 9 4.1 7.3l-.3.3.3.4-.3-.4zm-1.6.9L5 11.3l-3.4 1.2c-.5.2-.8-.1-.6-.6l1.2-3.4zm3.9 3h7v1h-7z"></path></svg>';
+                        this.watermarkSaveBtn.onclick = () => {
+                            const newWidth = parseFloat(this.watermarkEl.style.width);
+                            const newHeight = parseFloat(this.watermarkEl.style.height);
+
+                            fetch(
+                                'https://api.phora.inside-box.net/2.0/files/5239687317/metadata/enterprise/watermarking',
+                                {
+                                    method: 'PUT',
+                                    headers: {
+                                        Authorization: `Bearer ${this.options.token}`,
+                                        'Content-Type': 'application/json-patch+json'
+                                    },
+                                    body: JSON.stringify([
+                                        {
+                                            op: 'replace',
+                                            path: '/x',
+                                            value: Math.min(
+                                                1,
+                                                (parseFloat(this.watermarkEl.dataset.x) + newWidth / 2) / mediaWidth
+                                            )
+                                        },
+                                        {
+                                            op: 'replace',
+                                            path: '/y',
+                                            value: Math.min(
+                                                1,
+                                                (parseFloat(this.watermarkEl.dataset.y) + newHeight / 2) / mediaHeight
+                                            )
+                                        },
+                                        { op: 'replace', path: '/width', value: Math.min(1, newWidth / mediaWidth) },
+                                        { op: 'replace', path: '/height', value: Math.min(1, newHeight / mediaHeight) },
+                                        {
+                                            op: 'replace',
+                                            path: '/watermark',
+                                            value: this.watermarkTextEl.value.replace(/\r?\n/g, '\\n')
+                                        }
+                                    ]).replace(/"\s+|\s+"/g, '"')
+                                }
+                            ).then(() => {
+                                this.destroyWatermarkEditor();
+                                this.emit('reload');
+                            });
+                        };
+
+                        this.watermarkInteract = interact(this.watermarkEl)
+                            .draggable({
+                                onmove(event) {
+                                    let target = event.target,
+                                        // keep the dragged position in the data-x/data-y attributes
+                                        x = (parseFloat(target.getAttribute('data-x')) || 0) + event.dx,
+                                        y = (parseFloat(target.getAttribute('data-y')) || 0) + event.dy;
+
+                                    // translate the element
+                                    target.style.transform = `translate(${x}px, ${y}px)`;
+
+                                    // update the posiion attributes
+                                    target.setAttribute('data-x', x);
+                                    target.setAttribute('data-y', y);
+                                },
+                                restrict: {
+                                    restriction: 'parent',
+                                    elementRect: { top: 0, left: 0, bottom: 1, right: 1 }
+                                }
+                            })
+                            .resizable({
+                                // resize from all edges and corners
+                                edges: { left: true, right: true, bottom: true, top: true },
+
+                                // keep the edges inside the parent
+                                restrictEdges: {
+                                    outer: 'parent',
+                                    endOnly: true
+                                },
+
+                                // minimum size
+                                restrictSize: {
+                                    min: { width: 100, height: 50 }
+                                },
+
+                                inertia: true
+                            })
+                            .on('resizemove', (event) => {
+                                let target = event.target,
+                                    x = parseFloat(target.getAttribute('data-x')) || 0,
+                                    y = parseFloat(target.getAttribute('data-y')) || 0;
+
+                                // update the element's style
+                                target.style.fontSize = `${event.rect.width / 12}px`;
+                                target.style.width = `${event.rect.width}px`;
+                                target.style.height = `${event.rect.height}px`;
+
+                                // translate when resizing from top or left edges
+                                x += event.deltaRect.left;
+                                y += event.deltaRect.top;
+
+                                target.style.webkitTransform = target.style.transform = `translate(${x}px,${y}px)`;
+
+                                target.setAttribute('data-x', x);
+                                target.setAttribute('data-y', y);
+                            });
+                    });
+            });
     }
 
     /**
@@ -596,6 +813,7 @@ class MediaControls extends EventEmitter {
         addActivationListener(this.fullscreenButtonEl, this.toggleFullscreenHandler);
         addActivationListener(this.settingsButtonEl, this.toggleSettingsHandler);
         addActivationListener(this.subtitlesButtonEl, this.toggleSubtitlesHandler);
+        addActivationListener(this.watermarkButtonEl, this.toggleWatermarkEditor);
 
         fullscreen.addListener('exit', this.toggleFullscreenIcon);
         fullscreen.addListener('enter', this.toggleFullscreenIcon);

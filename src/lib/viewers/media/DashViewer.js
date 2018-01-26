@@ -369,6 +369,9 @@ class DashViewer extends VideoBaseViewer {
         this.mediaControls.addListener('qualitychange', this.handleQuality);
         this.mediaControls.addListener('subtitlechange', this.handleSubtitle);
         this.mediaControls.addListener('audiochange', this.handleAudioTrack);
+        this.mediaControls.addListener('reload', () => {
+            this.emit('reload');
+        });
     }
 
     /**
